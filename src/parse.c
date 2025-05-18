@@ -1,90 +1,94 @@
+#include "dict.h"
 #include "libwav.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-
-int parse_wav(const char *filename, struct WAVData *wav_data) {
+int parse_wav(const char *filename, struct WavFile *wav_file_data) {
   // Open the WAV file
-  FILE *wav_file = {0};
+  FILE *wav_file = malloc(sizeof(FILE));
   fopen_s(&wav_file, filename, "rb");
 
-  if (wav_file == NULL) {
-    perror("Failed to open WAV file");
-    return 1;
-  }
+  fseek(wav_file, 0, SEEK_END);
+  size_t file_size = ftell(wav_file);
+  fseek(wav_file, 0, SEEK_SET);
 
   // Read the WAV header
   char riff[4];
-  fread(riff, sizeof(char), 4, wav_file);
-  if (strncmp(riff, "RIFF", 4) != 0)
-    goto INVALID_FILE;
+  fread(&riff, sizeof(char), 4, wav_file);
 
   uint32_t riff_chunk_size;
   fread(&riff_chunk_size, sizeof(uint32_t), 1, wav_file);
 
   char wave[4];
   fread(wave, sizeof(char), 4, wav_file);
-  if (strncmp(wave, "WAVE", 4) != 0)
-    goto INVALID_FILE;
 
-  char fmt[4];
-  fread(fmt, sizeof(char), 4, wav_file);
-  if (strncmp(fmt, "fmt ", 4) != 0)
-    goto INVALID_FILE;
+  LookupTable table;
+  init_table(&table, 4);
 
-  uint32_t fmt_chunk_size;
-  fread(&fmt_chunk_size, sizeof(uint32_t), 1, wav_file);
-  if (fmt_chunk_size < 16)
-    goto INVALID_FILE;
+  while (ftell(wav_file) < file_size) {
+    char chunk_id[4];
+    fread(&chunk_id, sizeof(char), 4, wav_file);
 
-  fread(&wav_data->wFormatTag, sizeof(uint16_t), 1, wav_file);
-  fread(&wav_data->nChannels, sizeof(uint16_t), 1, wav_file);
-  fread(&wav_data->nSamplesPerSec, sizeof(uint32_t), 1, wav_file);
-  fread(&wav_data->nAvgBytesPerSec, sizeof(uint32_t), 1, wav_file);
-  fread(&wav_data->nBlockAlign, sizeof(uint16_t), 1, wav_file);
-  fread(&wav_data->wBitsPerSample, sizeof(uint16_t), 1, wav_file);
-  if (fmt_chunk_size > 16) {
-    fread(&wav_data->cbSize, sizeof(uint16_t), 1, wav_file);
-    if (fmt_chunk_size > 18) {
-      fread(&wav_data->wValidBitsPerSample, sizeof(uint16_t), 1, wav_file);
-      fread(&wav_data->dwChannelMask, sizeof(uint32_t), 1, wav_file);
-      fseek(wav_file, 16, SEEK_CUR); // Skip subformat
-    }
-  }
-
-  char chunk_id[4];
-  // Find the "data" chunk
-  while (fread(chunk_id, sizeof(char), 4, wav_file) == 4) {
-    if (strncmp(chunk_id, "data", 4) == 0)
-      break;
     uint32_t chunk_size;
     fread(&chunk_size, sizeof(uint32_t), 1, wav_file);
+
+    add_entry(&table, chunk_id,
+              ftell(wav_file) - 8); // Offset starts at the Chunk ID
+
     fseek(wav_file, chunk_size, SEEK_CUR);
   }
 
-  fread(&wav_data->data_size, sizeof(uint32_t), 1, wav_file);
+  struct WAVfmtData wav_fmt_data = {0};
+  uint32_t cbSize = 0;
+  struct WAVextensibleFmtData wav_ext_fmt_data = {0};
 
-  wav_data->data = malloc(wav_data->data_size);
-  if (wav_data->data == NULL) {
-    perror("Failed to allocate memory for WAV data");
-    fclose(wav_file);
-    return 1;
-  }
-  fread(wav_data->data, sizeof(char), wav_data->data_size, wav_file);
-  if (ferror(wav_file)) {
-    perror("Failed to read WAV data");
-    free(wav_data->data);
-    fclose(wav_file);
-    return 1;
+  Entry *fmt_entry = find_entry(&table, "fmt ");
+  if (fmt_entry) {
+    fseek(wav_file, fmt_entry->offset, SEEK_SET);
+    char fmt_id[4];
+    fread(&fmt_id, sizeof(char), 4, wav_file);
+    uint32_t fmt_size;
+    fread(&fmt_size, sizeof(uint32_t), 1, wav_file);
+
+    fread(&wav_fmt_data, sizeof(struct WAVfmtData), 1, wav_file);
+
+    if (fmt_size == 18) {
+      fread(&cbSize, sizeof(uint32_t), 1, wav_file);
+    }
+
+    if (cbSize == 22) {
+      fread(&wav_ext_fmt_data, sizeof(struct WAVextensibleFmtData), 1,
+            wav_file);
+    }
+  } else {
+    fprintf(stderr, "No 'fmt ' chunk found.\n");
   }
 
-  // VALID EXIT
+  struct WAVdata wav_data = {0};
+  Entry *data_entry = find_entry(&table, "data");
+  if (data_entry) {
+    fseek(wav_file, data_entry->offset, SEEK_SET);
+    fread(&wav_data.id, sizeof(char), 4, wav_file);
+    fread(&wav_data.size, sizeof(uint32_t), 1, wav_file);
+
+    // Read the data chunk
+    wav_data.data = malloc(wav_data.size);
+
+    fread(wav_data.data, sizeof(uint8_t), wav_data.size, wav_file);
+  } else {
+    fprintf(stderr, "No 'data' chunk found.\n");
+  }
+
+  wav_file_data->fmt_data = wav_fmt_data;
+  wav_file_data->cbSize = cbSize;
+  wav_file_data->ext_fmt_data = wav_ext_fmt_data;
+  wav_file_data->data_chunk = wav_data;
+
+  free_table(&table);
   fclose(wav_file);
+  free(wav_file);
+
   return 0;
-INVALID_FILE:
-  fprintf(stderr, "Invalid WAV file format\n");
-  fclose(wav_file);
-  return 1;
 }
