@@ -11,7 +11,7 @@ int parse_wav(const char *filename, struct WavFile *wav_file_data) {
   fopen_s(&wav_file, filename, "rb");
 
   fseek(wav_file, 0, SEEK_END);
-  size_t file_size = ftell(wav_file);
+  long file_size = ftell(wav_file);
   fseek(wav_file, 0, SEEK_SET);
 
   // Read the WAV header
